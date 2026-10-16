@@ -1,0 +1,35 @@
+Required source patch for `dashboard/` so the Next.js app honors NEXT_PUBLIC_BASE_PATH
+(needed any time the dashboard is served under a path prefix, e.g. /kuberay-dashboard,
+instead of at the domain root). Apply this against a clean checkout of the kuberay
+`dashboard/` directory before building Dockerfile.dashboard, e.g.:
+
+    cd kuberay
+    patch -p0 < images/dashboard-basepath.patch
+
+If the dashboard will be served at the domain root ("/"), this patch is not required
+and NEXT_PUBLIC_BASE_PATH can be left unset.
+
+--- dashboard/next.config.mjs
++++ dashboard/next.config.mjs
+@@ -1,6 +1,9 @@
+ /** @type {import('next').NextConfig} */
++const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
++
+ const nextConfig = {
+   output: "standalone",
++  ...(basePath ? { basePath } : {}),
+ };
+
+ export default nextConfig;
+--- dashboard/src/utils/constants.ts
++++ dashboard/src/utils/constants.ts
+@@ -11,7 +11,8 @@
+   }
+
+   try {
+-    const response = await fetch("/api/config");
++    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
++    const response = await fetch(`${basePath}/api/config`);
+     if (response.ok) {
+       const data: RuntimeConfig = await response.json();
+       runtimeConfig = {

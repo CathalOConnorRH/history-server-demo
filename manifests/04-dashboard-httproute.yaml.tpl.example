@@ -1,0 +1,44 @@
+# OPTIONAL -- only use this instead of (or in addition to) the Route in
+# 03-dashboard.yaml.tpl if you need to publish the dashboard behind an
+# existing shared Gateway (e.g. Red Hat OpenShift AI's `data-science-gateway`)
+# under a path prefix, rather than its own hostname.
+#
+# If you use this, you MUST:
+#   1. Set DASHBOARD_BASE_PATH (e.g. "/kuberay-dashboard") when building the
+#      image (see images/build-and-push.sh NEXT_PUBLIC_BASE_PATH) AND when
+#      rendering 03-dashboard.yaml.tpl, so the app's own routing and the
+#      Gateway's routing agree.
+#   2. Point GATEWAY_NAME/GATEWAY_NAMESPACE at a Gateway that already exists
+#      on the target cluster (this file does not create one).
+#
+# Rename to 04-dashboard-httproute.yaml.tpl (drop ".example") to include it
+# in install.sh.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kuberay-dashboard
+  namespace: ${GATEWAY_NAMESPACE}
+  labels:
+    app: kuberay-dashboard
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: ${GATEWAY_NAME}
+      namespace: ${GATEWAY_NAMESPACE}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: ${DASHBOARD_BASE_PATH}
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: kuberay-dashboard
+          namespace: ${NAMESPACE}
+          port: 3000
+          weight: 1
+      # Deliberately NO URLRewrite/ReplacePrefixMatch filter: the dashboard is
+      # a Next.js app built with this same basePath, so it expects to receive
+      # the full, un-stripped path (including the prefix) itself. Stripping
+      # the prefix at the Gateway would break Next.js's own basePath routing.
