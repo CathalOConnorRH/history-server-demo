@@ -13,6 +13,32 @@
 #
 # Rename to 04-dashboard-httproute.yaml.tpl (drop ".example") to include it
 # in install.sh.
+#
+# CROSS-NAMESPACE NOTE: the HTTPRoute lives in GATEWAY_NAMESPACE but its
+# backendRef points to the kuberay-dashboard Service in NAMESPACE. Gateway API
+# requires a ReferenceGrant in the *target* namespace (NAMESPACE) to authorise
+# this cross-namespace reference — without it the Gateway controller will
+# reject the backendRef with "RefNotPermitted". The ReferenceGrant below
+# creates that authorisation.
+---
+# ReferenceGrant: allow HTTPRoutes in GATEWAY_NAMESPACE to reference Services
+# in NAMESPACE. Scoped to only the gateway.networking.k8s.io/HTTPRoute kind
+# from the specific gateway namespace, so it does not open up arbitrary
+# cross-namespace access.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-dashboard
+  namespace: ${NAMESPACE}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ${GATEWAY_NAMESPACE}
+  to:
+    - group: ""
+      kind: Service
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

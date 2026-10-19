@@ -45,7 +45,7 @@ Repo/
 │   ├── 01-secret-s3-credentials.yaml.tpl
 │   ├── 02-historyserver.yaml.tpl          <- SA + auth-delegator CRB + Deployment (+ oauth-proxy sidecar) + Service + Route
 │   ├── 03-dashboard.yaml.tpl              <- SA + auth-delegator CRB + anyuid RoleBinding + Deployment (+ oauth-proxy sidecar) + Service + Route
-│   ├── 04-dashboard-httproute.yaml.tpl.example  <- optional Gateway API alternative
+│   ├── 04-dashboard-httproute.yaml.tpl.example  <- optional Gateway API alternative (includes ReferenceGrant for cross-namespace backendRef)
 │   └── 05-raycluster-new.yaml.tpl         <- full NEW RayCluster, collector pre-wired
 ├── examples/
 │   └── sample-workload.py                 <- Ray tasks + actors to validate the pipeline
@@ -99,6 +99,86 @@ official Red Hat OpenShift AI integration in a future release.
    auto-generating `OAUTH_COOKIE_SECRET` — skip if you set it manually)
    always; `python3` with `pyyaml` (`pip install pyyaml`) if patching an
    existing RayCluster.
+
+## Required permissions — who can install vs. who can use
+
+### Installing (deploying the stack)
+
+**`cluster-admin` is required.** A standard user — even one with the
+`admin` role on the target namespace — **cannot** run `install.sh`
+successfully. The manifests create three types of resource that only a
+cluster administrator can create:
+
+| Resource | Why it needs cluster-admin |
+|---|---|
+| **Namespace** (`00-namespace.yaml.tpl`) | Creating a Namespace (not a Project) requires the `create namespaces` cluster-level permission. On managed clusters (ROSA, OSD), the `self-provisioner` ClusterRoleBinding is typically disabled or creates Projects only. |
+| **ClusterRoleBinding** to `system:auth-delegator` (`02-historyserver.yaml.tpl`, `03-dashboard.yaml.tpl`) | Both the historyserver and dashboard ServiceAccounts need a **cluster-scoped** ClusterRoleBinding so their OAuth proxy sidecars can call `TokenReview` / `SubjectAccessReview`. No namespace-scoped role can create a ClusterRoleBinding. |
+| **RoleBinding** to `system:openshift:scc:anyuid` (`03-dashboard.yaml.tpl`) | The dashboard image runs as a fixed non-root UID that falls outside the namespace's auto-allocated range. Binding the `anyuid` SCC ClusterRole requires the `bind` verb on that ClusterRole, which the namespace `admin` role does **not** grant — only cluster-admin can do it. |
+
+If someone else administers the cluster for you, ask them to run
+`install.sh` (or to apply the rendered manifests). Once the stack is
+deployed, day-to-day usage does **not** require cluster-admin.
+
+### Using the deployed dashboard and historyserver
+
+**Any authenticated OpenShift user with `view`, `edit`, or `admin` on the
+namespace can access the Routes.** Both Routes are fronted by an OAuth proxy
+configured with:
+
+```
+--openshift-delegate-urls={"/":{"resource":"services","verb":"get","namespace":"<NAMESPACE>"}}
+```
+
+This means the proxy performs a `SubjectAccessReview` checking whether the
+caller can **`get services`** in the deployment namespace. The built-in
+`view`, `edit`, and `admin` roles all include this permission, so any user
+who has been granted one of these roles on the namespace is authorised.
+
+| Scenario | Access? |
+|---|---|
+| Cluster-admin | ✅ Yes |
+| User with `admin` role on the namespace | ✅ Yes |
+| User with `edit` role on the namespace | ✅ Yes |
+| User with `view` role on the namespace | ✅ Yes |
+| Authenticated user with **no** role on the namespace | ❌ No (403 Forbidden) |
+| Unauthenticated request | ❌ No (login redirect / 403) |
+
+To grant a colleague access without any elevated privileges:
+
+```bash
+oc adm policy add-role-to-user view <username> -n <NAMESPACE>
+```
+
+### Patching an existing RayCluster
+
+Running `scripts/patch-existing-raycluster.sh` only modifies the
+`RayCluster` CR and its namespace-scoped resources. A user with **`edit`**
+(or `admin`) on the RayCluster's namespace can run it — cluster-admin is
+not required for this step alone (assuming the historyserver stack was
+already deployed by an admin).
+
+### Optional HTTPRoute (Gateway API) — cross-namespace permissions
+
+If you enable the optional `04-dashboard-httproute.yaml.tpl.example`
+manifest, be aware that it creates resources in **two** namespaces:
+
+| Resource | Namespace | Why |
+|---|---|---|
+| `HTTPRoute` | `${GATEWAY_NAMESPACE}` (e.g. `openshift-ingress`) | Must be co-located with the Gateway it attaches to via `parentRefs` |
+| `ReferenceGrant` | `${NAMESPACE}` (e.g. `ray-history`) | Authorises the HTTPRoute in the gateway namespace to reference the `kuberay-dashboard` Service cross-namespace |
+
+The `ReferenceGrant` is **required by the Gateway API spec** — without it,
+the Gateway controller rejects the cross-namespace `backendRef` with a
+`RefNotPermitted` status and traffic will not reach the dashboard. The
+grant included in the manifest is scoped narrowly: it only allows
+`HTTPRoute` resources from `${GATEWAY_NAMESPACE}` to reference `Service`
+resources in `${NAMESPACE}`.
+
+The installing user therefore needs permission to create resources in
+**both** namespaces (`HTTPRoute` in the gateway namespace, `ReferenceGrant`
+in the application namespace). On most clusters this still requires
+cluster-admin, since the gateway namespace is typically managed
+infrastructure.
 
 ## Quick start — brand-new cluster, brand-new RayCluster
 
